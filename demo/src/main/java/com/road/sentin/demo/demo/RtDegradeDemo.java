@@ -1,0 +1,126 @@
+package com.road.sentin.demo.demo;
+
+import com.road.sentin.core.data.TimeUtil;
+import com.road.sentin.core.entry.Entry;
+import com.road.sentin.core.phy.Sphu;
+import com.road.sentin.core.rule.DegradeRule;
+import com.road.sentin.core.rule.DegradeRuleManager;
+import com.road.sentin.core.rule.RuleConstant;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+
+public class RtDegradeDemo {
+
+    private static final String KEY = "abc";
+
+    private static AtomicInteger pass = new AtomicInteger();
+    private static AtomicInteger block = new AtomicInteger();
+    private static AtomicInteger total = new AtomicInteger();
+
+    private static volatile boolean stop = false;
+    private static final int threadCount = 100;
+    private static int seconds = 60 + 40;
+
+    public static void main(String[] args) throws Exception {
+
+        tick();
+        initDegradeRule();
+
+        for (int i = 0; i < threadCount; i++) {
+            Thread entryThread = new Thread(new Runnable() {
+
+                @Override
+                public void run() {
+                    while (true) {
+                        Entry entry = null;
+                        try {
+                            TimeUnit.MILLISECONDS.sleep(5);
+                            entry = Sphu.entry(KEY);
+                            // token acquired
+                            pass.incrementAndGet();
+                            // sleep 600 ms, as rt
+                            TimeUnit.MILLISECONDS.sleep(600);
+                        } catch (Exception e) {
+                            block.incrementAndGet();
+                        } finally {
+                            total.incrementAndGet();
+                            if (entry != null) {
+                                entry.exit();
+                            }
+                        }
+                    }
+                }
+
+            });
+            entryThread.setName("working-thread");
+            entryThread.start();
+        }
+    }
+
+    private static void initDegradeRule() {
+        List<DegradeRule> rules = new ArrayList<DegradeRule>();
+        DegradeRule rule = new DegradeRule();
+        rule.setResource(KEY);
+        // set threshold rt, 10 ms
+        rule.setCount(10);
+        rule.setGrade(RuleConstant.DEGRADE_GRADE_RT);
+        rule.setTimeWindow(10);
+        rules.add(rule);
+        DegradeRuleManager.loadRules(rules);
+    }
+
+    private static void tick() {
+        Thread timer = new Thread(new TimerTask());
+        timer.setName("sentinel-timer-task");
+        timer.start();
+    }
+
+    static class TimerTask implements Runnable {
+
+        @Override
+        public void run() {
+            long start = System.currentTimeMillis();
+            System.out.println("begin to statistic!!!");
+            long oldTotal = 0;
+            long oldPass = 0;
+            long oldBlock = 0;
+
+            while (!stop) {
+                try {
+                    TimeUnit.SECONDS.sleep(1);
+                } catch (InterruptedException e) {
+                }
+
+                long globalTotal = total.get();
+                long oneSecondTotal = globalTotal - oldTotal;
+                oldTotal = globalTotal;
+
+                long globalPass = pass.get();
+                long oneSecondPass = globalPass - oldPass;
+                oldPass = globalPass;
+
+                long globalBlock = block.get();
+                long oneSecondBlock = globalBlock - oldBlock;
+                oldBlock = globalBlock;
+
+                System.out.println(TimeUtil.currentTimeMills() + ", total:" + oneSecondTotal
+                        + ", pass:" + oneSecondPass + ", block:" + oneSecondBlock);
+
+                if (seconds-- <= 0) {
+                    stop = true;
+                }
+            }
+
+            long cost = System.currentTimeMillis() - start;
+            System.out.println("time cost: " + cost + " ms");
+            System.out.println("total:" + total.get() + ", pass:" + pass.get()
+                    + ", block:" + block.get());
+            System.exit(0);
+        }
+    }
+
+}
+
